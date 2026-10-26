@@ -1,0 +1,22 @@
+services:
+  lms-maba:
+    build: 
+      context: ./lms-maba
+    ports:
+      - "3000:3000" # Diakses maba via port 3000
+    environment:
+      - SHARED_DB_PATH=/app/data/db.json
+    volumes:
+      - ./data:/app/data
+    restart: unless-stopped
+
+  lms-admin:
+    build: 
+      context: ./lms-admin
+    ports:
+      - "3001:3001" # Diakses admin via port 3001
+    environment:
+      - SHARED_DB_PATH=/app/data/db.json
+    volumes:
+      - ./data:/app/data
+    restart: unless-stopped

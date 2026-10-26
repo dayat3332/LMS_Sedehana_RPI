@@ -1,0 +1,90 @@
+@import "tailwindcss";
+
+@theme {
+  /* "Press Start 2P" is loaded via next/font in layout.tsx and exposed as --font-press-start */
+  --font-pixel: var(--font-press-start), ui-monospace, monospace;
+
+  /* Steps through the 4 idle frames of a 12-column sprite sheet (4 / 12 = 33.333%) */
+  --animate-sprite-idle: sprite-idle 0.7s steps(4) infinite;
+  /* Steps through the 6 walk/run frames of a 12-column sprite sheet (6 / 12 = 50%) */
+  --animate-sprite-walk: sprite-walk 0.55s steps(6) infinite;
+  /* Steps through a 5-frame horizontal sprite sheet (Dark Dwellers cursors) */
+  --animate-sprite-5: sprite-5 0.65s steps(5) infinite;
+  --animate-bob: bob 1.2s steps(2) infinite;
+  --animate-twinkle: twinkle 1.6s steps(2) infinite;
+
+  @keyframes sprite-idle {
+    from {
+      transform: translateX(0);
+    }
+    to {
+      transform: translateX(-33.3333%);
+    }
+  }
+
+  @keyframes sprite-walk {
+    from {
+      transform: translateX(0);
+    }
+    to {
+      transform: translateX(-50%);
+    }
+  }
+
+  @keyframes sprite-5 {
+    from {
+      transform: translateX(0);
+    }
+    to {
+      transform: translateX(-100%);
+    }
+  }
+
+  @keyframes bob {
+    0%,
+    100% {
+      transform: translateY(0);
+    }
+    50% {
+      transform: translateY(-4px);
+    }
+  }
+
+  @keyframes twinkle {
+    0%,
+    100% {
+      opacity: 1;
+    }
+    50% {
+      opacity: 0.2;
+    }
+  }
+}
+
+/* Hard, pixel-stepped black drop shadow for body text */
+@utility text-shadow-pixel {
+  text-shadow:
+    2px 2px 0 #000,
+    3px 3px 0 #000;
+}
+
+/* Heavy pixel outline + drop shadow (used for headings & rank badges) */
+@utility text-stroke-pixel {
+  text-shadow:
+    -3px -3px 0 #000,
+    0 -3px 0 #000,
+    3px -3px 0 #000,
+    3px 0 0 #000,
+    3px 3px 0 #000,
+    0 3px 0 #000,
+    -3px 3px 0 #000,
+    -3px 0 0 #000,
+    6px 6px 0 #000,
+    3px 6px 0 #000,
+    6px 3px 0 #000;
+}
+
+/* Crisp nearest-neighbour scaling for pixel art */
+@utility pixelated {
+  image-rendering: pixelated;
+}
