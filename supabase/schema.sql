@@ -15,13 +15,22 @@ CREATE TABLE IF NOT EXISTS public.users (
   email TEXT UNIQUE NOT NULL,
   nama_ksatria TEXT NOT NULL,
   nim TEXT UNIQUE NOT NULL,
+  prodi TEXT,
+  divisi TEXT,
   faksi TEXT NOT NULL, -- Major / Class / Division (e.g., 'Teknik Informatika / Hardware')
+  password TEXT,
   role TEXT NOT NULL DEFAULT 'maba' CHECK (role IN ('maba', 'admin')),
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+-- Migrations for existing deployments
+ALTER TABLE public.users ADD COLUMN IF NOT EXISTS prodi TEXT;
+ALTER TABLE public.users ADD COLUMN IF NOT EXISTS divisi TEXT;
+ALTER TABLE public.users ADD COLUMN IF NOT EXISTS password TEXT;
+
 CREATE INDEX IF NOT EXISTS idx_users_role ON public.users(role);
 CREATE INDEX IF NOT EXISTS idx_users_nim ON public.users(nim);
+CREATE INDEX IF NOT EXISTS idx_users_email ON public.users(email);
 
 -- ----------------------------------------------------------------------------
 -- 2. TABLE: absensi_sessions
@@ -46,9 +55,13 @@ CREATE TABLE IF NOT EXISTS public.absensi_logs (
   session_id UUID NOT NULL REFERENCES public.absensi_sessions(id) ON DELETE CASCADE,
   maba_id UUID NOT NULL REFERENCES public.users(id) ON DELETE CASCADE,
   status TEXT NOT NULL DEFAULT 'HADIR' CHECK (status IN ('HADIR', 'IZIN', 'SAKIT', 'ALPHA')),
+  qr_code TEXT,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   UNIQUE (session_id, maba_id)
 );
+
+-- Migrations for existing deployments
+ALTER TABLE public.absensi_logs ADD COLUMN IF NOT EXISTS qr_code TEXT;
 
 CREATE INDEX IF NOT EXISTS idx_absensi_logs_session ON public.absensi_logs(session_id);
 CREATE INDEX IF NOT EXISTS idx_absensi_logs_maba ON public.absensi_logs(maba_id);
@@ -78,9 +91,9 @@ CREATE TABLE IF NOT EXISTS public.quizzes (
 CREATE TABLE IF NOT EXISTS public.grades (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   maba_id UUID UNIQUE NOT NULL REFERENCES public.users(id) ON DELETE CASCADE,
-  kehadiran_pertemuan JSONB NOT NULL DEFAULT '[true,true,true,true,true,true,true,true]'::jsonb, -- 8 pertemuan
-  keaktifan_pertemuan JSONB NOT NULL DEFAULT '[80,80,80,80,80,80,80,80]'::jsonb,                 -- 8 pertemuan (0-100 per pertemuan)
-  tugas_detail JSONB NOT NULL DEFAULT '[80,80,80]'::jsonb,                                        -- 3 tugas (Tugas 1, 2, 3)
+  kehadiran_pertemuan JSONB NOT NULL DEFAULT '[false,false,false,false,false,false,false,false]'::jsonb, -- 8 pertemuan
+  keaktifan_pertemuan JSONB NOT NULL DEFAULT '[0,0,0,0,0,0,0,0]'::jsonb,                                 -- 8 pertemuan (0-100 per pertemuan)
+  tugas_detail JSONB NOT NULL DEFAULT '[0,0,0]'::jsonb,                                                 -- 3 tugas (Tugas 1, 2, 3)
   kehadiran NUMERIC(5,2) NOT NULL DEFAULT 0 CHECK (kehadiran >= 0 AND kehadiran <= 100),
   keaktifan NUMERIC(5,2) NOT NULL DEFAULT 0 CHECK (keaktifan >= 0 AND keaktifan <= 100),
   tugas NUMERIC(5,2) NOT NULL DEFAULT 0 CHECK (tugas >= 0 AND tugas <= 100),
@@ -115,16 +128,39 @@ FOR EACH ROW
 EXECUTE FUNCTION public.calculate_nilai_akhir();
 
 -- ----------------------------------------------------------------------------
--- ROW LEVEL SECURITY (RLS) POLICIES (Development / Shared Dual-App Access)
+-- 6. TABLE: system_settings
+-- Stores application state (e.g. reset_at timestamp)
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS public.system_settings (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- ----------------------------------------------------------------------------
+-- ROW LEVEL SECURITY (RLS) POLICIES (Dual-App Access)
 -- ----------------------------------------------------------------------------
 ALTER TABLE public.users ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.absensi_sessions ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.absensi_logs ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.quizzes ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.grades ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.system_settings ENABLE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS "Allow public read/write users" ON public.users;
 CREATE POLICY "Allow public read/write users" ON public.users FOR ALL USING (true) WITH CHECK (true);
+
+DROP POLICY IF EXISTS "Allow public read/write absensi_sessions" ON public.absensi_sessions;
 CREATE POLICY "Allow public read/write absensi_sessions" ON public.absensi_sessions FOR ALL USING (true) WITH CHECK (true);
+
+DROP POLICY IF EXISTS "Allow public read/write absensi_logs" ON public.absensi_logs;
 CREATE POLICY "Allow public read/write absensi_logs" ON public.absensi_logs FOR ALL USING (true) WITH CHECK (true);
+
+DROP POLICY IF EXISTS "Allow public read/write quizzes" ON public.quizzes;
 CREATE POLICY "Allow public read/write quizzes" ON public.quizzes FOR ALL USING (true) WITH CHECK (true);
+
+DROP POLICY IF EXISTS "Allow public read/write grades" ON public.grades;
 CREATE POLICY "Allow public read/write grades" ON public.grades FOR ALL USING (true) WITH CHECK (true);
+
+DROP POLICY IF EXISTS "Allow public read/write system_settings" ON public.system_settings;
+CREATE POLICY "Allow public read/write system_settings" ON public.system_settings FOR ALL USING (true) WITH CHECK (true);

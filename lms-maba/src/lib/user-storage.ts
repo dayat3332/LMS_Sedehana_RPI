@@ -339,7 +339,10 @@ export async function registerUserAccount(
   const cleanedProdi = values.prodi.trim();
   const cleanedDivisi = values.divisiRiset.trim();
 
-  let userId = `u-maba-${Date.now()}`;
+  let userId =
+    typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+      ? crypto.randomUUID()
+      : `u-maba-${Date.now()}`;
 
   try {
     const res = await fetch("/api/db", {
