@@ -85,40 +85,23 @@ function isValidUuid(id: string): boolean {
   );
 }
 
+/**
+ * Mengembalikan path file storage lokal yang aman.
+ * Pada serverless (Vercel / AWS Lambda), direktori /var/task bersifat read-only.
+ * Oleh karena itu, kita selalu menggunakan folder sementara os.tmpdir() yang dijamin writable,
+ * kecuali jika environment variable SHARED_DB_PATH telah didefinisikan secara eksplisit.
+ */
 function getDbFilePath(): string {
   if (process.env.SHARED_DB_PATH) {
     return process.env.SHARED_DB_PATH;
   }
-  // Pada platform serverless seperti Vercel / AWS Lambda, filesystem /var/task bersifat read-only.
-  // Hanya folder os.tmpdir() yang diizinkan untuk penulisan file.
-  if (process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME) {
-    return path.join(os.tmpdir(), "lms_db.json");
-  }
-  const defaultLocalPath = path.resolve(process.cwd(), "../data/db.json");
-  try {
-    const dir = path.dirname(defaultLocalPath);
-    if (!fs.existsSync(/*turbopackIgnore: true*/ dir)) {
-      fs.mkdirSync(/*turbopackIgnore: true*/ dir, { recursive: true });
-    }
-    return defaultLocalPath;
-  } catch {
-    return path.join(os.tmpdir(), "lms_db.json");
-  }
+  return path.join(os.tmpdir(), "lms_db.json");
 }
 
 function readDb(): SharedDatabaseSchema {
-  const filePath = getDbFilePath();
   try {
+    const filePath = getDbFilePath();
     if (!fs.existsSync(/*turbopackIgnore: true*/ filePath)) {
-      try {
-        const dir = path.dirname(filePath);
-        if (!fs.existsSync(/*turbopackIgnore: true*/ dir)) {
-          fs.mkdirSync(/*turbopackIgnore: true*/ dir, { recursive: true });
-        }
-        fs.writeFileSync(/*turbopackIgnore: true*/ filePath, JSON.stringify(EMPTY_DB, null, 2), "utf-8");
-      } catch {
-        // Fallback jika tidak bisa menulis ke disk
-      }
       return structuredClone(memoryDb);
     }
     const raw = fs.readFileSync(/*turbopackIgnore: true*/ filePath, "utf-8");
@@ -141,13 +124,9 @@ function writeDb(db: SharedDatabaseSchema): void {
   memoryDb = structuredClone(db);
   try {
     const filePath = getDbFilePath();
-    const dir = path.dirname(filePath);
-    if (!fs.existsSync(/*turbopackIgnore: true*/ dir)) {
-      fs.mkdirSync(/*turbopackIgnore: true*/ dir, { recursive: true });
-    }
     fs.writeFileSync(/*turbopackIgnore: true*/ filePath, JSON.stringify(db, null, 2), "utf-8");
   } catch (err) {
-    console.warn("Peringatan: Gagal menyimpan data ke disk lokal, disimpan di memory cache:", err);
+    console.warn("Peringatan: Gagal menyimpan data ke disk, data disimpan di memory cache:", err);
   }
 }
 
@@ -337,8 +316,13 @@ async function safeUpsertUser(
   supabase: SupabaseClient,
   user: DbUserRow,
 ): Promise<DbUserRow> {
-  const fullPayload = {
-    id: user.id,
+  const { data: existingById } = await supabase
+    .from("users")
+    .select("id")
+    .eq("id", user.id)
+    .maybeSingle();
+
+  const fullPayload: Record<string, unknown> = {
     nim: user.nim,
     nama_ksatria: user.nama_ksatria,
     email: user.email,
@@ -347,40 +331,66 @@ async function safeUpsertUser(
     faksi: user.faksi,
     password: user.password,
     role: user.role,
-    created_at: user.created_at,
   };
 
-  const { data, error } = await supabase
-    .from("users")
-    .upsert(fullPayload, { onConflict: "id" })
-    .select()
-    .single();
+  const basicPayload: Record<string, unknown> = {
+    nim: user.nim,
+    nama_ksatria: user.nama_ksatria,
+    email: user.email,
+    faksi: user.faksi,
+    role: user.role,
+  };
 
-  if (!error && data) return data as unknown as DbUserRow;
-
-  // Jika kolom prodi/divisi/password belum dimigrasi di Supabase, fallback ke kolom dasar
-  if (error && (error.code === "42703" || error.message.includes("column"))) {
-    const basicPayload = {
-      id: user.id,
-      nim: user.nim,
-      nama_ksatria: user.nama_ksatria,
-      email: user.email,
-      faksi: user.faksi,
-      role: user.role,
-      created_at: user.created_at,
-    };
-    const { data: bData, error: bError } = await supabase
+  if (existingById) {
+    const { data, error } = await supabase
       .from("users")
-      .upsert(basicPayload, { onConflict: "id" })
+      .update(fullPayload)
+      .eq("id", user.id)
       .select()
-      .single();
-    if (!bError && bData) return bData as unknown as DbUserRow;
+      .maybeSingle();
+
+    if (!error && data) return data as unknown as DbUserRow;
+
+    if (error && (error.code === "42703" || error.message?.includes("column"))) {
+      const { data: bData, error: bError } = await supabase
+        .from("users")
+        .update(basicPayload)
+        .eq("id", user.id)
+        .select()
+        .maybeSingle();
+      if (!bError && bData) return bData as unknown as DbUserRow;
+    }
+
+    if (error) {
+      console.error("Gagal melakukan update user ke Supabase:", error);
+      throw error;
+    }
+  } else {
+    const insertFull = { ...fullPayload, id: user.id, created_at: user.created_at };
+    const { data, error } = await supabase
+      .from("users")
+      .insert(insertFull)
+      .select()
+      .maybeSingle();
+
+    if (!error && data) return data as unknown as DbUserRow;
+
+    if (error && (error.code === "42703" || error.message?.includes("column"))) {
+      const insertBasic = { ...basicPayload, id: user.id, created_at: user.created_at };
+      const { data: bData, error: bError } = await supabase
+        .from("users")
+        .insert(insertBasic)
+        .select()
+        .maybeSingle();
+      if (!bError && bData) return bData as unknown as DbUserRow;
+    }
+
+    if (error) {
+      console.error("Gagal melakukan insert user ke Supabase:", error);
+      throw error;
+    }
   }
 
-  if (error) {
-    console.error("Gagal melakukan upsert user ke Supabase:", error);
-    throw error;
-  }
   return user;
 }
 
@@ -394,8 +404,12 @@ export async function GET() {
     try {
       const db = await fetchSupabaseDb(supabase);
       return NextResponse.json(db);
-    } catch (err) {
-      console.error("Supabase GET error, fallback to local:", err);
+    } catch (err: any) {
+      console.error("Supabase GET error:", err);
+      return NextResponse.json(
+        { error: "Gagal mengambil data dari Supabase: " + (err?.message || String(err)) },
+        { status: 500 }
+      );
     }
   }
 
@@ -460,21 +474,24 @@ export async function POST(req: Request) {
 
           // Cari user yang sudah ada berdasarkan NIM atau Email
           let existingUser: any = null;
-          if (nim || email) {
-            const query = supabase
+          if (nim && nim !== "-") {
+            const { data: byNim } = await supabase
               .from("users")
               .select("*")
-              .eq("role", "maba");
-            if (nim && email) {
-              const { data } = await query.or(`nim.ilike.${nim},email.ilike.${email}`);
-              existingUser = data?.[0] ?? null;
-            } else if (nim) {
-              const { data } = await query.ilike("nim", nim);
-              existingUser = data?.[0] ?? null;
-            } else {
-              const { data } = await query.ilike("email", email);
-              existingUser = data?.[0] ?? null;
-            }
+              .eq("role", "maba")
+              .ilike("nim", nim)
+              .limit(1);
+            if (byNim && byNim.length > 0) existingUser = byNim[0];
+          }
+
+          if (!existingUser && email && email !== "-") {
+            const { data: byEmail } = await supabase
+              .from("users")
+              .select("*")
+              .eq("role", "maba")
+              .ilike("email", email)
+              .limit(1);
+            if (byEmail && byEmail.length > 0) existingUser = byEmail[0];
           }
 
           let savedUser: DbUserRow;
@@ -526,17 +543,34 @@ export async function POST(req: Request) {
           const identifier = String(payload.identifier ?? "").trim().toLowerCase();
           const password = String(payload.password ?? "").trim();
 
-          const { data: matchedUsers } = await supabase
+          let matched: any = null;
+          const { data: byNim } = await supabase
             .from("users")
             .select("*")
-            .eq("role", "maba");
+            .eq("role", "maba")
+            .ilike("nim", identifier)
+            .limit(1);
+          if (byNim && byNim.length > 0) matched = byNim[0];
 
-          const matched = (matchedUsers ?? []).find(
-            (u: any) =>
-              String(u.nim || "").toLowerCase() === identifier ||
-              String(u.email || "").toLowerCase() === identifier ||
-              String(u.nama_ksatria || "").toLowerCase() === identifier,
-          );
+          if (!matched) {
+            const { data: byEmail } = await supabase
+              .from("users")
+              .select("*")
+              .eq("role", "maba")
+              .ilike("email", identifier)
+              .limit(1);
+            if (byEmail && byEmail.length > 0) matched = byEmail[0];
+          }
+
+          if (!matched) {
+            const { data: byName } = await supabase
+              .from("users")
+              .select("*")
+              .eq("role", "maba")
+              .ilike("nama_ksatria", identifier)
+              .limit(1);
+            if (byName && byName.length > 0) matched = byName[0];
+          }
 
           if (!matched) {
             return NextResponse.json(
@@ -701,17 +735,26 @@ export async function POST(req: Request) {
           const email = String(payload.email ?? "").trim().toLowerCase();
 
           // 1. Temukan atau daftarkan maba di database Supabase
-          const { data: allMaba } = await supabase.from("users").select("*").eq("role", "maba");
-          let user = (allMaba ?? []).find(
-            (u: any) =>
-              (isValidUuid(mabaId) && u.id === mabaId) ||
-              (nim && nim !== "-" && String(u.nim).toLowerCase() === nim.toLowerCase()) ||
-              (email && email !== "-" && String(u.email).toLowerCase() === email.toLowerCase()) ||
-              (nama_ksatria && String(u.nama_ksatria).toUpperCase() === nama_ksatria),
-          );
-
-          if (!user && (!nim || nim === "-") && !nama_ksatria) {
-            user = allMaba?.[0];
+          let user: any = null;
+          if (mabaId && isValidUuid(mabaId)) {
+            const { data } = await supabase.from("users").select("*").eq("id", mabaId).maybeSingle();
+            if (data) user = data;
+          }
+          if (!user && nim && nim !== "-") {
+            const { data } = await supabase.from("users").select("*").eq("role", "maba").ilike("nim", nim).maybeSingle();
+            if (data) user = data;
+          }
+          if (!user && email && email !== "-") {
+            const { data } = await supabase.from("users").select("*").eq("role", "maba").ilike("email", email).maybeSingle();
+            if (data) user = data;
+          }
+          if (!user && nama_ksatria) {
+            const { data } = await supabase.from("users").select("*").eq("role", "maba").ilike("nama_ksatria", nama_ksatria).maybeSingle();
+            if (data) user = data;
+          }
+          if (!user) {
+            const { data: firstMaba } = await supabase.from("users").select("*").eq("role", "maba").order("created_at", { ascending: false }).limit(1);
+            if (firstMaba && firstMaba.length > 0) user = firstMaba[0];
           }
 
           if (!user) {
@@ -734,33 +777,31 @@ export async function POST(req: Request) {
 
           // 2. Tentukan sesi aktif di Supabase
           let sessionId = String(payload.session_id ?? "");
-          if (!isValidUuid(sessionId)) {
-            const { data: sessions = [] } = await supabase
-              .from("absensi_sessions")
-              .select("*")
-              .order("created_at", { ascending: false });
+          let session: any = null;
 
-            let session = qrCode && qrCode !== "FORM-KIRIM"
-              ? sessions?.find((s: any) => String(s.rune_code).toUpperCase() === qrCode)
-              : undefined;
-
-            if (!session) {
-              session = sessions?.find((s: any) => s.is_active) ?? sessions?.[0];
-            }
-
-            if (!session) {
-              const newSesId = crypto.randomUUID();
-              await supabase.from("absensi_sessions").insert({
-                id: newSesId,
-                rune_code: qrCode && qrCode !== "FORM-KIRIM" ? qrCode : "RPI-ABSEN-2026",
-                is_active: true,
-                created_at: new Date().toISOString(),
-              });
-              sessionId = newSesId;
-            } else {
-              sessionId = session.id;
-            }
+          if (sessionId && isValidUuid(sessionId)) {
+            const { data } = await supabase.from("absensi_sessions").select("*").eq("id", sessionId).maybeSingle();
+            if (data) session = data;
           }
+          if (!session && qrCode && qrCode !== "FORM-KIRIM") {
+            const { data } = await supabase.from("absensi_sessions").select("*").ilike("rune_code", qrCode).maybeSingle();
+            if (data) session = data;
+          }
+          if (!session) {
+            const { data } = await supabase.from("absensi_sessions").select("*").eq("is_active", true).order("created_at", { ascending: false }).limit(1);
+            if (data && data.length > 0) session = data[0];
+          }
+          if (!session) {
+            const newSesId = crypto.randomUUID();
+            const { data } = await supabase.from("absensi_sessions").insert({
+              id: newSesId,
+              rune_code: qrCode && qrCode !== "FORM-KIRIM" ? qrCode : "RPI-ABSEN-2026",
+              is_active: true,
+              created_at: new Date().toISOString(),
+            }).select().single();
+            session = data || { id: newSesId };
+          }
+          sessionId = session.id;
 
           // 3. Catat / Update Log Absensi
           const { data: existingLog } = await supabase
@@ -776,7 +817,12 @@ export async function POST(req: Request) {
               created_at: new Date().toISOString(),
             };
             if (qrCode) updatePayload.qr_code = qrCode;
-            await supabase.from("absensi_logs").update(updatePayload).eq("id", existingLog.id);
+            try {
+              await supabase.from("absensi_logs").update(updatePayload).eq("id", existingLog.id);
+            } catch {
+              delete updatePayload.qr_code;
+              await supabase.from("absensi_logs").update(updatePayload).eq("id", existingLog.id);
+            }
           } else {
             const insertPayload: Record<string, unknown> = {
               id: crypto.randomUUID(),
@@ -932,8 +978,12 @@ export async function POST(req: Request) {
           return NextResponse.json(db);
         }
       }
-    } catch (supabaseError) {
-      console.error("Supabase action error, falling back to local handler:", supabaseError);
+    } catch (supabaseError: any) {
+      console.error("Supabase action error:", supabaseError);
+      return NextResponse.json(
+        { error: "Database Supabase error: " + (supabaseError?.message || String(supabaseError)) },
+        { status: 500 }
+      );
     }
   }
 
